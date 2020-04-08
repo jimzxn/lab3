@@ -12,8 +12,9 @@
 #define max_worker 10
 //global varible
 int port = 8888;
-char *dictionary = "dictionary.txt";
-
+char dictionary[100] = "dictionary.txt";
+int dic_size = 0;
+char dic_arr[100000][50];
 //queue varible
 int log_fornt = 0, log_rear = -1, log_count = 0;
 char *log_queue[100]; //need init at main
@@ -27,86 +28,97 @@ pthread_mutex_t s_mutex, log_mutex;
 
 void *worker_theard(void *arg)
 {
-    int socket_desc=0;
+    int socket_desc = 0;
     while (1)
     {
         pthread_mutex_lock(&s_mutex);
+        //dequeue
+
         while (sock_count == 0)
         {
             pthread_cond_wait(&s_fill, &s_mutex);
         }
-        //dequeue
         socket_desc = sock[0];
         for (size_t i = 0; i < sock_count; i++)
         {
             sock[i] = sock[i + 1];
         }
         sock_rear--;
+        sock_count--;
         //dequeue end
         pthread_cond_signal(&s_empty);
         pthread_mutex_unlock(&s_mutex);
-
         char word[100] = "\0";
-        FILE *fd;
-        if ((fd = fopen(dictionary, "r")) == NULL)
+        int len;
+        while ((len = read(socket_desc, word, 100)) > 0)
         {
-            exit(-1);
-        }
-        while (read(socket_desc, word, 100) > 0)
-        {
-            printf("%d\n", 1);
-            char buffer[100];
-            while ((fscanf(fd, "%s\n", buffer)!=EOF))
+            if (word[len - 1] == '\n')
             {
-                if (strcmp(word, buffer) == 0)
+                word[len - 1] = '\0';
+            }
+            char result[20] = "\0";
+            int c = 0;
+            while (c < dic_size)
+            {
+                if (strcmp(word, dic_arr[c]) == 0)
                 {
-                    strcpy(word, "ok");
+                    strcpy(result, " OK");
                     break;
                 }
+                else
+                {
+                    strcpy(result, "MISSPLELLED");
+                }
+                c++;
             }
-            strcpy(word, "MISSPLELLED");
-            write(socket_desc, word, 100);
+            strcat(word, result);
+            strcat(word, "\n");
+            printf("output:%s\n", word);
+            write(socket_desc, word, strlen(word));
+            //log
             pthread_mutex_lock(&log_mutex);
             //enqueue log
             while (log_count == 100)
             {
                 pthread_cond_wait(&log_empty, &log_mutex);
             }
-            log_queue[log_rear++] = word;
+            log_rear++;
+            strcpy(log_queue[log_rear], word);
+            log_count++;
+            printf("work log count:%d\n", log_count);
             //done
             pthread_cond_signal(&log_fill);
             pthread_mutex_unlock(&log_mutex);
+            word[0] = '\0';
         }
         //clear fd for new loop
-        free(fd);
         close(socket_desc);
     }
 }
 
 void *log_thread(void *arg)
 {
-    char *buffer = "\0";
+
     while (1)
     {
-        FILE *fd = fopen("LOG.txt", "a+");
         pthread_mutex_lock(&log_mutex);
         while (log_count == 0)
         {
             pthread_cond_wait(&log_fill, &log_mutex);
         }
         //dequeue
-        buffer = log_queue[0];
+        FILE *fd = fopen("LOG.txt", "a+");
+        fprintf(fd, "%s", log_queue[0]);
+        fclose(fd);
         for (size_t i = 0; i < log_count; i++)
         {
             log_queue[i] = log_queue[i + 1];
         }
         log_rear--;
+        log_count--;
         //dequeue end
         pthread_cond_signal(&log_empty);
-        //write file
-        fprintf(fd, "%s \n", buffer);
         pthread_mutex_unlock(&log_mutex);
-        free(fd);
     }
 }
 int main(int argc, char *argv[])
@@ -119,26 +131,43 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&s_mutex, 0);
     pthread_mutex_init(&log_mutex, 0);
     //done
+    //arg check
+    if (argc == 3)
+    {
+        strcpy(dictionary, argv[2]);
+        port = atoi(argv[1]);
+    }
+    if (argc == 2)
+    {
+        if (strstr(argv[1], "txt"))
+        {
+
+            strcpy(dictionary, argv[1]);
+        }
+        else
+        {
+            port = atoi(argv[1]);
+        }
+    }
+    //dix init
+    FILE *fd;
+    if ((fd = fopen(dictionary, "r")) == NULL)
+    {
+        exit(-1);
+    }
+    int index = 0;
+    while ((fscanf(fd, "%s\n", dic_arr[index]) != EOF))
+    {
+        index++;
+    }
+    dic_size = index;
+    //done
     //queue init
     for (size_t i = 0; i < 100; i++)
     {
         log_queue[i] = malloc(100);
     }
 
-    //arg check
-    int fd;
-    if(argc == 3){
-        strcpy(dictionary, argv[2]);
-        port = atoi(argv[1]);
-    }
-    if(argc == 2){
-        if(strstr(argv[1], "txt")){
-            strcpy(dictionary, argv[1]);
-        }
-        else{
-            port = atoi(argv[1]);
-        }
-    }
     pthread_t w_thread[max_worker];
     for (size_t i = 0; i < max_worker; i++)
     {
@@ -173,7 +202,7 @@ int main(int argc, char *argv[])
     }
     puts("Bind done.");
     // Listen (converts active socket to a LISTENING socket which can accept connections)
-    listen(socket_desc, 10);
+    listen(socket_desc, 3);
     puts("Waiting for incoming connections...");
     while (1)
     {
@@ -191,8 +220,11 @@ int main(int argc, char *argv[])
         {
             pthread_cond_wait(&s_empty, &s_mutex);
         }
-        sock[sock_rear++] = new_socket;
+        sock_rear++;
+        sock[sock_rear] = new_socket;
+        printf("main:%d:::\n", new_socket);
         sock_count++;
+        puts("Connection enqueued");
         pthread_cond_signal(&s_fill);
         pthread_mutex_unlock(&s_mutex);
     }
